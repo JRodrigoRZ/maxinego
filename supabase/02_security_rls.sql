@@ -26,25 +26,20 @@ END;
 $$;
 
 -- Verifica si el usuario actual es SuperAdmin de la plataforma
-CREATE OR REPLACE FUNCTION is_superadmin()
+CREATE OR REPLACE FUNCTION public.is_superadmin()
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = pg_catalog
 STABLE
 AS $$
 BEGIN
-    RETURN (
-        -- Verificación por registro explícito en store_users
-        EXISTS (
-            SELECT 1
-            FROM store_users su
-            WHERE su.user_id = auth.uid()
-              AND su.role = 'superadmin'
-              AND su.is_active = TRUE
-        )
-        -- O mediante claim/role en el JWT de Supabase
-        OR (coalesce(auth.jwt()->>'role', '') = 'superadmin')
+    RETURN EXISTS (
+        SELECT 1
+        FROM public.store_users su
+        WHERE su.user_id = auth.uid()
+          AND su.role = 'superadmin'
+          AND su.is_active = TRUE
     );
 END;
 $$;
@@ -131,7 +126,7 @@ CREATE POLICY "stores_tenant_update"
 CREATE POLICY "stores_superadmin_insert"
     ON stores FOR INSERT
     TO authenticated
-    WITH CHECK (is_superadmin() OR auth.uid() IS NOT NULL);
+    WITH CHECK (public.is_superadmin());
 
 CREATE POLICY "stores_superadmin_delete"
     ON stores FOR DELETE
@@ -149,24 +144,17 @@ CREATE POLICY "store_users_tenant_select"
     TO authenticated
     USING (tenant_id IN (SELECT get_user_tenant_ids()) OR is_superadmin());
 
--- Administrador del comercio: Puede registrar usuarios en su propio comercio
-CREATE POLICY "store_users_tenant_insert"
-    ON store_users FOR INSERT
-    TO authenticated
-    WITH CHECK (is_tenant_admin(tenant_id) OR is_superadmin());
+-- Las escrituras de asociaciones se realizan exclusivamente desde endpoints
+-- autorizados que usan service_role. RLS no concede escritura directa al cliente.
+REVOKE INSERT, UPDATE, DELETE ON TABLE public.store_users
+    FROM PUBLIC, anon, authenticated;
+REVOKE INSERT (id, tenant_id, user_id, role, full_name, email, is_active, created_at, updated_at),
+       UPDATE (id, tenant_id, user_id, role, full_name, email, is_active, created_at, updated_at)
+    ON TABLE public.store_users
+    FROM PUBLIC, anon, authenticated;
 
--- Administrador del comercio: Puede modificar usuarios de su propio comercio
-CREATE POLICY "store_users_tenant_update"
-    ON store_users FOR UPDATE
-    TO authenticated
-    USING (is_tenant_admin(tenant_id) OR is_superadmin())
-    WITH CHECK (is_tenant_admin(tenant_id) OR is_superadmin());
-
--- Administrador del comercio: Puede eliminar la vinculación de usuarios de su comercio
-CREATE POLICY "store_users_tenant_delete"
-    ON store_users FOR DELETE
-    TO authenticated
-    USING (is_tenant_admin(tenant_id) OR is_superadmin());
+GRANT SELECT ON TABLE public.store_users TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.store_users TO service_role;
 
 -- ----------------------------------------------------------------------------
 -- 5. POLÍTICAS: CATEGORÍAS (categories)
@@ -276,17 +264,15 @@ CREATE POLICY "orders_customer_select"
     TO authenticated
     USING (customer_id = auth.uid());
 
--- Clientes / Visitantes: Crear pedidos para un comercio activo
-CREATE POLICY "orders_insert"
-    ON orders FOR INSERT
-    TO anon, authenticated
-    WITH CHECK (
-        EXISTS (
-            SELECT 1 FROM stores s
-            WHERE s.id = orders.tenant_id
-              AND s.status IN ('activo', 'prueba')
-        )
-    );
+-- La creación de pedidos se realiza mediante /api/checkout/create-order con
+-- service_role; los clientes no insertan cabeceras directamente.
+REVOKE INSERT ON TABLE public.orders FROM PUBLIC, anon, authenticated;
+REVOKE INSERT (id, tenant_id, customer_id, customer_name, customer_email,
+               customer_phone, status, total, created_at, updated_at)
+    ON TABLE public.orders
+    FROM PUBLIC, anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.orders TO service_role;
 
 -- ----------------------------------------------------------------------------
 -- 8. POLÍTICAS: DETALLE DE PEDIDOS (order_items)
@@ -310,14 +296,10 @@ CREATE POLICY "order_items_customer_select"
         )
     );
 
--- Inserción de ítems de pedido: Validar coherencia con la cabecera del pedido y tenant
-CREATE POLICY "order_items_insert"
-    ON order_items FOR INSERT
-    TO anon, authenticated
-    WITH CHECK (
-        EXISTS (
-            SELECT 1 FROM orders o
-            WHERE o.id = order_items.order_id
-              AND o.tenant_id = order_items.tenant_id
-        )
-    );
+-- Los artículos se crean junto con la cabecera desde el endpoint servidor.
+REVOKE INSERT ON TABLE public.order_items FROM PUBLIC, anon, authenticated;
+REVOKE INSERT (id, tenant_id, order_id, product_id, quantity, unit_price, created_at)
+    ON TABLE public.order_items
+    FROM PUBLIC, anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.order_items TO service_role;

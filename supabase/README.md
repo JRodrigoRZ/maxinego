@@ -2,6 +2,11 @@
 
 Esta fase implementa la arquitectura de base de datos PostgreSQL y seguridad con Row Level Security (RLS) en Supabase para el SaaS Marketplace Verticalizado.
 
+> **Importante:** estos archivos son baselines para instalaciones nuevas. No son
+> migraciones incrementales y no deben ejecutarse indiscriminadamente sobre una
+> base de datos de Production en funcionamiento. Las protecciones SEC-02 actuales
+> ya fueron aplicadas manualmente y verificadas en Supabase Production.
+
 ---
 
 ## 1. Estructura de Archivos
@@ -84,6 +89,12 @@ Soporta las particularidades de diferentes verticales mediante JSONB:
    * **Catálogo Público**: Usuarios anónimos o clientes pueden consultar tiendas y productos siempre y cuando `status = 'activo'` e `is_available = true`.
    * **Privacidad de Usuarios y Pedidos**: Tablas como `store_users` y `orders` están completamente bloqueadas para consultas anónimas.
    * **SuperAdmin**: Permisos globales basados en `is_superadmin()`.
+   * **Asociaciones administrativas**: `store_users` no admite escritura directa
+     desde `anon` ni `authenticated`; las operaciones autorizadas se realizan en
+     el servidor con `service_role`.
+   * **Creación de pedidos**: El navegador utiliza `/api/checkout/create-order`.
+     `anon` y `authenticated` no insertan directamente en `orders` ni
+     `order_items`.
 
 ---
 
@@ -97,21 +108,27 @@ Soporta las particularidades de diferentes verticales mediante JSONB:
 
 ---
 
-## 5. Instancia de Supabase Configurada
+## 5. Configuración de Supabase
 
-* **URL del Proyecto**: `https://wuerdwkcpurbtcwyqjep.supabase.co`
-* **Public/Publishable Key**: `sb_publishable_CaupILScNyFk_Kwk-oda_Q_gWniqb4g`
-* Las variables han sido configuradas de manera segura en el entorno (`.env` y `BuildConfig.SUPABASE_URL`, `BuildConfig.SUPABASE_PUBLISHABLE_KEY`).
+* La URL y la clave publicable se configuran mediante las variables de entorno
+  previstas por la aplicación; este baseline no contiene valores de ningún entorno.
+* `SUPABASE_SERVICE_ROLE_KEY` es privada y debe estar disponible únicamente para
+  los endpoints del servidor que realizan operaciones privilegiadas.
+* No documentes aquí claves, tokens, UUID privados ni identificadores específicos
+  de Production.
 
 ---
 
 ## 6. Instrucciones de Despliegue y Pruebas
 
-### Paso 1: Ejecutar la Migración
-1. Abre tu proyecto en Supabase Dashboard (`https://wuerdwkcpurbtcwyqjep.supabase.co`).
-2. Ve a **SQL Editor**.
-3. Copia y pega el contenido de `complete_phase1_database.sql`.
-4. Haz clic en **Run**.
+### Paso 1: Preparar una instalación nueva
+1. Confirma que el destino sea una instalación nueva y no una base de datos de
+   Production ya operativa.
+2. Revisa el esquema, las políticas y los grants contra los requisitos del nuevo
+   entorno antes de ejecutar `complete_phase1_database.sql`.
+3. Para modificar un entorno existente, prepara una migración específica con
+   precondiciones, ensayo transaccional y verificaciones posteriores; no reutilices
+   estos baselines como migración.
 
 ### Paso 2: Ejecutar las Pruebas de Validación
 1. En el mismo **SQL Editor**, abre una nueva consulta.
