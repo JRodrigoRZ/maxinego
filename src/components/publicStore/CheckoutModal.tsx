@@ -495,6 +495,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         product_id: String(it.productId).trim(),
         quantity: qty,
         unit_price: unitPrice,
+        selectedSize: it.selectedSize || null,
+        selectedColor: it.selectedColor ? { name: it.selectedColor.name } : null,
+        selectedModifiers: Array.isArray(it.selectedModifiers)
+          ? it.selectedModifiers.map((modifier) => ({ name: modifier.name }))
+          : [],
       };
     });
 
@@ -520,12 +525,16 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         customerEmail: email.trim().slice(0, 120) || null,
         status: 'pendiente',
         total: Number(finalTotal.toFixed(2)),
+        deliveryMethod,
         shippingCost: deliveryMethod === 'delivery' ? Number(shippingCost.toFixed(2)) : 0,
         promoCode: appliedPromo?.code ? appliedPromo.code.trim() : undefined,
         items: payloadItems.map((it) => ({
           productId: it.product_id,
           quantity: it.quantity,
           unitPrice: it.unit_price,
+          selectedSize: it.selectedSize,
+          selectedColor: it.selectedColor,
+          selectedModifiers: it.selectedModifiers,
         })),
       };
 
@@ -568,6 +577,41 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       serverResult && typeof serverResult.confirmedSubtotal === 'number'
         ? serverResult.confirmedSubtotal
         : Number(subtotal.toFixed(2));
+    const confirmedShippingCost =
+      serverResult && typeof serverResult.confirmedShippingCost === 'number'
+        ? serverResult.confirmedShippingCost
+        : Number(shippingCost.toFixed(2));
+    const confirmedCartItems: CartItem[] = items.map((item, index) => {
+      const confirmedItem = Array.isArray(serverResult?.confirmedItems)
+        ? serverResult.confirmedItems[index]
+        : null;
+      if (
+        !confirmedItem ||
+        confirmedItem.productId !== item.productId ||
+        typeof confirmedItem.unitPrice !== 'number' ||
+        !Number.isFinite(confirmedItem.unitPrice)
+      ) {
+        return item;
+      }
+
+      return {
+        ...item,
+        price: confirmedItem.unitPrice,
+        basePrice:
+          typeof confirmedItem.basePrice === 'number' && Number.isFinite(confirmedItem.basePrice)
+            ? confirmedItem.basePrice
+            : item.basePrice,
+        selectedSize:
+          typeof confirmedItem.selectedSize === 'string' ? confirmedItem.selectedSize : undefined,
+        selectedColor:
+          confirmedItem.selectedColor && typeof confirmedItem.selectedColor.name === 'string'
+            ? confirmedItem.selectedColor
+            : undefined,
+        selectedModifiers: Array.isArray(confirmedItem.selectedModifiers)
+          ? confirmedItem.selectedModifiers
+          : undefined,
+      };
+    });
 
     // 2. Crear registro en la persistencia del tenant con valores confirmados
     const newTenantOrder: Order = {
@@ -595,10 +639,10 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       storeSlug: store.slug || '',
       storePhone: profile.phone || '',
       storeWhatsapp: profile.whatsapp || profile.phone || '',
-      items: items,
+      items: confirmedCartItems,
       subtotal: confirmedSubtotal,
       discount: confirmedDiscount,
-      shippingCost: Number(shippingCost.toFixed(2)),
+      shippingCost: confirmedShippingCost,
       total: confirmedTotal,
       deliveryMethod: deliveryMethod,
       deliveryAddress: trimmedAddress || undefined,

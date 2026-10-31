@@ -9,8 +9,91 @@ const supabaseServiceRoleKey =
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+type CheckoutDeliveryMethod = 'delivery' | 'pickup';
+
+interface CheckoutShippingSettings {
+  offersShipping: boolean;
+  shippingType: 'free' | 'fixed';
+  fixedCost: number;
+  minOrderAmount: number;
+  maxOrderAmount: number;
+  availableDays: string[];
+  availableHours: string;
+}
+
+interface ConfirmedCheckoutModifier {
+  name: string;
+  price: number;
+}
+
+interface ConfirmedCheckoutItem {
+  productId: string;
+  quantity: number;
+  basePrice: number;
+  unitPrice: number;
+  selectedSize: string | null;
+  selectedColor: { name: string; hex: string } | null;
+  selectedModifiers: ConfirmedCheckoutModifier[];
+}
+
+// Fallback vigente del checkout para comercios que aún no persistieron stores.shipping.
+const DEFAULT_CHECKOUT_SHIPPING: CheckoutShippingSettings = {
+  offersShipping: true,
+  shippingType: 'fixed',
+  fixedCost: 15,
+  minOrderAmount: 50,
+  maxOrderAmount: 0,
+  availableDays: ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'],
+  availableHours: '11:00 a 20:30',
+};
+
 function isValidUUID(str: unknown): boolean {
   return typeof str === 'string' && UUID_REGEX.test(str.trim());
+}
+
+function isValidShippingSettings(value: unknown): value is CheckoutShippingSettings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+
+  const settings = value as Record<string, unknown>;
+  return (
+    typeof settings.offersShipping === 'boolean' &&
+    (settings.shippingType === 'free' || settings.shippingType === 'fixed') &&
+    typeof settings.fixedCost === 'number' &&
+    Number.isFinite(settings.fixedCost) &&
+    settings.fixedCost >= 0 &&
+    typeof settings.minOrderAmount === 'number' &&
+    Number.isFinite(settings.minOrderAmount) &&
+    settings.minOrderAmount >= 0 &&
+    typeof settings.maxOrderAmount === 'number' &&
+    Number.isFinite(settings.maxOrderAmount) &&
+    settings.maxOrderAmount >= 0 &&
+    Array.isArray(settings.availableDays) &&
+    typeof settings.availableHours === 'string'
+  );
+}
+
+function calculateShippingCost(
+  deliveryMethod: CheckoutDeliveryMethod,
+  subtotal: number,
+  storedSettings: unknown
+): { cost: number; available: boolean } {
+  if (deliveryMethod === 'pickup') return { cost: 0, available: true };
+
+  const settings = isValidShippingSettings(storedSettings)
+    ? storedSettings
+    : DEFAULT_CHECKOUT_SHIPPING;
+
+  if (!settings.offersShipping) return { cost: 0, available: false };
+
+  // Conserva la regla vigente del CheckoutModal: para tarifa fija, el umbral
+  // minOrderAmount convierte el envío en gratuito; por debajo se cobra fixedCost.
+  const cost =
+    settings.shippingType === 'fixed' &&
+    !(settings.minOrderAmount > 0 && subtotal >= settings.minOrderAmount)
+      ? settings.fixedCost
+      : 0;
+
+  return { cost: Number(cost.toFixed(2)), available: true };
 }
 
 export default async function handler(req: any, res: any) {
@@ -69,7 +152,7 @@ export default async function handler(req: any, res: any) {
     status,
     items,
     promoCode,
-    shippingCost,
+    deliveryMethod,
   } = body;
 
   // FASE 4: Validaciones básicas de estructura
@@ -91,6 +174,13 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({
       success: false,
       error: 'El pedido debe contener al menos un producto (items no puede estar vacío).',
+    });
+  }
+
+  if (deliveryMethod !== 'delivery' && deliveryMethod !== 'pickup') {
+    return res.status(400).json({
+      success: false,
+      error: 'La modalidad de entrega debe ser delivery o pickup.',
     });
   }
 
@@ -129,14 +219,29 @@ export default async function handler(req: any, res: any) {
       ? customerEmail.trim().toLowerCase().slice(0, 120)
       : null;
 
-  const cleanCustomerId = customerId && isValidUUID(customerId) ? String(customerId).trim() : null;
-  const cleanStatus = typeof status === 'string' && status.trim() ? status.trim() : 'pendiente';
+  // El checkout público vigente opera como invitado. No permite asociar el pedido
+  // a un UUID aportado por el comprador sin una identidad autenticada verificable.
+  if (customerId !== null && customerId !== undefined && customerId !== '') {
+    return res.status(400).json({
+      success: false,
+      error: 'El checkout público no admite asociar manualmente un identificador de cliente.',
+    });
+  }
+  const cleanCustomerId = null;
+
+  if (status !== null && status !== undefined && status !== 'pendiente') {
+    return res.status(400).json({
+      success: false,
+      error: 'El estado inicial del pedido debe ser pendiente.',
+    });
+  }
+  const cleanStatus = 'pendiente';
 
   // Validación de cada item
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const pid = it.productId || it.product_id;
-    const qty = Number(it.quantity);
+    const qty = it.quantity;
 
     if (!isValidUUID(pid)) {
       return res.status(400).json({
@@ -145,7 +250,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    if (!Number.isInteger(qty) || qty <= 0) {
+    if (typeof qty !== 'number' || !Number.isSafeInteger(qty) || qty <= 0) {
       return res.status(400).json({
         success: false,
         error: `La cantidad del producto en posición ${i + 1} debe ser un número entero mayor a 0.`,
@@ -162,7 +267,7 @@ export default async function handler(req: any, res: any) {
     // FASE 4 & 16: Validación del comercio (tenant)
     const { data: store, error: storeError } = await supabase
       .from('stores')
-      .select('id, name, status')
+      .select('id, name, status, shipping')
       .eq('id', tenantId)
       .single();
 
@@ -187,7 +292,7 @@ export default async function handler(req: any, res: any) {
 
     const { data: dbProducts, error: prodsError } = await supabase
       .from('products')
-      .select('id, tenant_id, name, status, price')
+      .select('id, tenant_id, name, status, is_available, price, attributes')
       .eq('tenant_id', tenantId)
       .in('id', uniqueProductIds);
 
@@ -209,15 +314,188 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // Cálculo canónico del subtotal server-side basado exclusivamente en public.products.price
+    if ((dbProducts || []).some((product: any) => product.status !== 'activo')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Uno o más productos no están activos para la venta.',
+      });
+    }
+
+    if ((dbProducts || []).some((product: any) => product.is_available !== true)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Uno o más productos no se encuentran disponibles.',
+      });
+    }
+
+    // Cálculo canónico del subtotal server-side. El precio base y los recargos
+    // permitidos proceden exclusivamente del producto persistido.
     let serverItemsSubtotal = 0;
+    const confirmedItems: ConfirmedCheckoutItem[] = [];
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       const pid = String(it.productId || it.product_id).trim();
-      const qty = Math.floor(Number(it.quantity));
+      const qty = it.quantity;
       const dbProd = foundProductMap.get(pid);
-      const canonicalPrice = Number(Number(dbProd.price).toFixed(2));
-      serverItemsSubtotal += qty * canonicalPrice;
+      const rawCanonicalPrice = Number(dbProd.price);
+      if (!Number.isFinite(rawCanonicalPrice) || rawCanonicalPrice < 0) {
+        console.error('[CentralBo Checkout API] Precio canónico inválido para producto:', pid);
+        return res.status(500).json({
+          success: false,
+          error: 'No se pudo verificar el precio de uno o más productos.',
+        });
+      }
+      const canonicalPrice = Number(rawCanonicalPrice.toFixed(2));
+      const attributes =
+        dbProd.attributes && typeof dbProd.attributes === 'object' && !Array.isArray(dbProd.attributes)
+          ? (dbProd.attributes as Record<string, unknown>)
+          : {};
+
+      let selectedSize: string | null = null;
+      if (it.selectedSize !== null && it.selectedSize !== undefined && it.selectedSize !== '') {
+        if (typeof it.selectedSize !== 'string') {
+          return res.status(400).json({ success: false, error: 'La talla seleccionada no es válida.' });
+        }
+        const canonicalSizes = Array.isArray(attributes.sizes)
+          ? attributes.sizes.filter((size): size is string => typeof size === 'string')
+          : [];
+        selectedSize = canonicalSizes.find((size) => size === it.selectedSize) || null;
+        if (!selectedSize) {
+          return res.status(400).json({
+            success: false,
+            error: 'La talla seleccionada no existe para este producto.',
+          });
+        }
+      }
+
+      let selectedColor: { name: string; hex: string } | null = null;
+      if (it.selectedColor !== null && it.selectedColor !== undefined) {
+        const requestedColorName =
+          it.selectedColor && typeof it.selectedColor === 'object'
+            ? it.selectedColor.name
+            : null;
+        if (typeof requestedColorName !== 'string' || !requestedColorName) {
+          return res.status(400).json({ success: false, error: 'El color seleccionado no es válido.' });
+        }
+        const canonicalColors = Array.isArray(attributes.colors)
+          ? attributes.colors.filter(
+              (color): color is { name: string; hex?: string } =>
+                Boolean(color) &&
+                typeof color === 'object' &&
+                typeof (color as any).name === 'string'
+            )
+          : [];
+        const canonicalColor = canonicalColors.find((color) => color.name === requestedColorName);
+        if (!canonicalColor) {
+          return res.status(400).json({
+            success: false,
+            error: 'El color seleccionado no existe para este producto.',
+          });
+        }
+        selectedColor = {
+          name: canonicalColor.name,
+          hex: typeof canonicalColor.hex === 'string' ? canonicalColor.hex : '#000000',
+        };
+      }
+
+      const requestedModifiers =
+        it.selectedModifiers === null || it.selectedModifiers === undefined
+          ? []
+          : it.selectedModifiers;
+      if (!Array.isArray(requestedModifiers)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Los extras seleccionados tienen un formato inválido.',
+        });
+      }
+
+      const canonicalModifierMap = new Map<string, ConfirmedCheckoutModifier>();
+      let modifierConfigurationInvalid = false;
+      const rawModifiers = Array.isArray(attributes.modifiers) ? attributes.modifiers : [];
+      for (const rawModifier of rawModifiers) {
+        if (
+          !rawModifier ||
+          typeof rawModifier !== 'object' ||
+          typeof (rawModifier as any).name !== 'string' ||
+          !(rawModifier as any).name ||
+          typeof (rawModifier as any).price !== 'number' ||
+          !Number.isFinite((rawModifier as any).price) ||
+          (rawModifier as any).price < 0
+        ) {
+          modifierConfigurationInvalid = true;
+          continue;
+        }
+
+        const name = (rawModifier as any).name as string;
+        if (canonicalModifierMap.has(name)) {
+          modifierConfigurationInvalid = true;
+          continue;
+        }
+        canonicalModifierMap.set(name, {
+          name,
+          price: Number(((rawModifier as any).price as number).toFixed(2)),
+        });
+      }
+
+      if (requestedModifiers.length > 0 && modifierConfigurationInvalid) {
+        console.error('[CentralBo Checkout API] Configuración ambigua o inválida de extras:', pid);
+        return res.status(500).json({
+          success: false,
+          error: 'No se pudo verificar la configuración de extras del producto.',
+        });
+      }
+
+      const selectedModifiers: ConfirmedCheckoutModifier[] = [];
+      const requestedModifierNames = new Set<string>();
+      for (const requestedModifier of requestedModifiers) {
+        const name =
+          requestedModifier && typeof requestedModifier === 'object'
+            ? requestedModifier.name
+            : null;
+        if (typeof name !== 'string' || !name || requestedModifierNames.has(name)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Uno o más extras seleccionados no son válidos.',
+          });
+        }
+        requestedModifierNames.add(name);
+
+        const canonicalModifier = canonicalModifierMap.get(name);
+        if (!canonicalModifier) {
+          return res.status(400).json({
+            success: false,
+            error: 'Uno o más extras seleccionados no existen para este producto.',
+          });
+        }
+        selectedModifiers.push(canonicalModifier);
+      }
+
+      const modifiersTotal = selectedModifiers.reduce((sum, modifier) => sum + modifier.price, 0);
+      const rawConfirmedUnitPrice = canonicalPrice + modifiersTotal;
+      if (!Number.isFinite(rawConfirmedUnitPrice) || rawConfirmedUnitPrice < 0) {
+        console.error('[CentralBo Checkout API] Precio final inválido para producto:', pid);
+        return res.status(500).json({
+          success: false,
+          error: 'No se pudo verificar el precio final de uno o más productos.',
+        });
+      }
+      const confirmedUnitPrice = Number(rawConfirmedUnitPrice.toFixed(2));
+      serverItemsSubtotal += qty * confirmedUnitPrice;
+      confirmedItems.push({
+        productId: pid,
+        quantity: qty,
+        basePrice: canonicalPrice,
+        unitPrice: confirmedUnitPrice,
+        selectedSize,
+        selectedColor,
+        selectedModifiers,
+      });
+    }
+    if (!Number.isFinite(serverItemsSubtotal) || serverItemsSubtotal < 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'El importe del pedido excede el rango permitido.',
+      });
     }
     serverItemsSubtotal = Number(serverItemsSubtotal.toFixed(2));
 
@@ -299,11 +577,20 @@ export default async function handler(req: any, res: any) {
       promoRecord = promoData;
     }
 
-    // Costo de envío informado
-    const cleanShippingCost =
-      typeof shippingCost === 'number' && !isNaN(shippingCost) && shippingCost >= 0
-        ? Number(Number(shippingCost).toFixed(2))
-        : 0;
+    // Costo de envío calculado exclusivamente desde stores.shipping y la regla
+    // vigente del checkout. El importe enviado por el comprador no se utiliza.
+    const shippingResult = calculateShippingCost(
+      deliveryMethod,
+      serverItemsSubtotal,
+      store.shipping
+    );
+    if (!shippingResult.available) {
+      return res.status(400).json({
+        success: false,
+        error: 'Este comercio no ofrece envío a domicilio. Selecciona pickup.',
+      });
+    }
+    const cleanShippingCost = shippingResult.cost;
 
     // Determinación autoritativa del total confirmado basado estrictamente en el subtotal canónico
     const confirmedTotal = Number(
@@ -339,17 +626,14 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // FASE 7: Creación en lote (batch) de public.order_items utilizando el precio canónico de public.products.price
-    const orderItemsPayload = items.map((it: any) => {
-      const pid = String(it.productId || it.product_id).trim();
-      const dbProd = foundProductMap.get(pid);
-      const canonicalUnitPrice = Number(Number(dbProd.price).toFixed(2));
+    // FASE 7: Creación en lote de public.order_items con precio base y extras canónicos.
+    const orderItemsPayload = confirmedItems.map((item) => {
       return {
         tenant_id: cleanTenantId,
         order_id: cleanOrderId,
-        product_id: pid,
-        quantity: Math.floor(Number(it.quantity)),
-        unit_price: canonicalUnitPrice,
+        product_id: item.productId,
+        quantity: item.quantity,
+        unit_price: item.unitPrice,
       };
     });
 
@@ -415,7 +699,9 @@ export default async function handler(req: any, res: any) {
       order: orderData,
       confirmedSubtotal: Number(serverItemsSubtotal.toFixed(2)),
       discountAmount: Number(discountAmount.toFixed(2)),
+      confirmedShippingCost: cleanShippingCost,
       confirmedTotal: confirmedTotal,
+      confirmedItems,
       appliedPromotion: promoRecord
         ? {
             id: promoRecord.id,
