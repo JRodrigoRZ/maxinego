@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search,
   Star,
@@ -142,6 +142,15 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   };
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const [visibleCount, setVisibleCount] = useState(24);
+
+  // Evita recalcular el catálogo completo en cada pulsación del teclado.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearchQuery(searchQuery), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
   const [internalSelectedCategoryId, setInternalSelectedCategoryId] = useState<string>('all');
 
   const selectedCategoryId = propSelectedCategoryId !== undefined ? propSelectedCategoryId : internalSelectedCategoryId;
@@ -174,7 +183,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
   // Filtrado reactivo por categoría y texto de búsqueda (nombre, descripción, especialidad)
   const filteredProducts = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = debouncedSearchQuery.trim().toLowerCase();
     return publicProducts.filter((p) => {
       const matchesCategory =
         selectedCategoryId === 'all' || p.category_id === selectedCategoryId;
@@ -188,7 +197,16 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
       return matchesCategory && matchesSearch;
     });
-  }, [publicProducts, selectedCategoryId, searchQuery]);
+  }, [publicProducts, selectedCategoryId, debouncedSearchQuery]);
+
+  useEffect(() => {
+    setVisibleCount(24);
+  }, [selectedCategoryId, debouncedSearchQuery]);
+
+  const visibleProducts = useMemo(
+    () => filteredProducts.slice(0, visibleCount),
+    [filteredProducts, visibleCount]
+  );
 
   // Compartir enlace del producto o copiar al portapapeles
   const handleShareProduct = (e: React.MouseEvent, productId: string, productName: string) => {
@@ -405,6 +423,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
         </div>
       ) : (
         /* REJILLA / LISTADO DE PRODUCTOS Y SERVICIOS */
+        <>
         <motion.div
           variants={containerVariants}
           initial="hidden"
@@ -417,7 +436,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
               : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6'
           }
         >
-          {filteredProducts.map((product) => {
+          {visibleProducts.map((product) => {
             const previousPrice = product.attributes?.previous_price as number | undefined;
             const hasOffer = previousPrice != null && previousPrice > product.price;
             const discountPercent = hasOffer
@@ -521,6 +540,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         onError={() => setImgErrors((prev) => ({ ...prev, [product.id]: true }))}
                         className={`w-full h-full object-cover transition-transform duration-500 ease-out ${imageHoverClass}`}
                         loading="lazy"
+                        decoding="async"
                       />
                     )}
 
@@ -776,6 +796,18 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
             );
           })}
         </motion.div>
+        {visibleCount < filteredProducts.length && (
+          <div className="flex justify-center pt-5">
+            <button
+              type="button"
+              onClick={() => setVisibleCount((count) => count + 24)}
+              className="px-5 py-3 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-sm font-semibold text-stone-800 dark:text-stone-100 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
+            >
+              Mostrar más ({filteredProducts.length - visibleCount} restantes)
+            </button>
+          </div>
+        )}
+        </>
       )}
     </div>
   );

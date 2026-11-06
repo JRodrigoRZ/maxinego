@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider } from './context/AuthContext';
 import { RouterProvider, useRouter } from './context/RouterContext';
@@ -6,12 +6,21 @@ import { usePWA } from './hooks/usePWA';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
 import { OfflineIndicator } from './components/OfflineIndicator';
-import { PortalHome } from './components/PortalHome';
-import { LoginView } from './components/LoginView';
-import { PublicStoreView } from './components/PublicStoreView';
-import { SuperAdminArea } from './components/SuperAdminArea';
-import { StoreAdminArea } from './components/StoreAdminArea';
+
+
+
+
+
 import { UnauthorizedView } from './components/UnauthorizedView';
+import { RouteSkeleton } from './components/RouteSkeleton';
+
+// Se descarga cada área únicamente al navegar a ella; evita cargar
+// los paneles administrativos en la visita inicial a la tienda pública.
+const PortalHome = React.lazy(() => import('./components/PortalHome').then((module) => ({ default: module.PortalHome })));
+const LoginView = React.lazy(() => import('./components/LoginView').then((module) => ({ default: module.LoginView })));
+const PublicStoreView = React.lazy(() => import('./components/PublicStoreView').then((module) => ({ default: module.PublicStoreView })));
+const SuperAdminArea = React.lazy(() => import('./components/SuperAdminArea').then((module) => ({ default: module.SuperAdminArea })));
+const StoreAdminArea = React.lazy(() => import('./components/StoreAdminArea').then((module) => ({ default: module.StoreAdminArea })));
 
 function AppContent() {
   const { currentRoute } = useRouter();
@@ -39,6 +48,7 @@ function AppContent() {
 
       {/* Contenido Dinámico de la Ruta Multi-Tenant */}
       <main className={isPublicStore || isStoreAdmin ? "flex-1 w-full" : "flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 lg:py-10"}>
+        <Suspense fallback={<RouteSkeleton kind={isPublicStore ? 'store' : isStoreAdmin ? 'dashboard' : 'page'} />}>
         {currentRoute.type === 'home' && <PortalHome />}
 
         {currentRoute.type === 'login' && (
@@ -64,6 +74,7 @@ function AppContent() {
             targetTenantId={currentRoute.targetTenantId}
           />
         )}
+        </Suspense>
       </main>
 
       {/* Pie de página institucional - Excluido en tienda pública y en panel administrativo */}

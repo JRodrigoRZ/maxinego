@@ -273,6 +273,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         }));
 
       const response = await fetch('/api/chat', {
+        // Acota el tiempo de espera en el navegador, sin cambiar el contrato JSON del chat.
+        signal: AbortSignal.timeout(40000),
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

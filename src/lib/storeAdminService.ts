@@ -46,6 +46,19 @@ import {
 import { SUPERADMIN_STORES } from './superadminService';
 import { supabase } from './supabase';
 
+// Comparte únicamente las lecturas remotas que todavía están en curso.
+// Se elimina la promesa al terminar: no almacena resultados viejos ni mezcla tenants.
+const pendingCatalogReads = new Map<string, Promise<unknown>>();
+function dedupeCatalogRead<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  const pending = pendingCatalogReads.get(key) as Promise<T> | undefined;
+  if (pending) return pending;
+  const request = loader().finally(() => {
+    if (pendingCatalogReads.get(key) === request) pendingCatalogReads.delete(key);
+  });
+  pendingCatalogReads.set(key, request);
+  return request;
+}
+
 // ----------------------------------------------------------------------------
 export function getStorePlan(storeOrTenantId: Store | string | null | undefined): 'free' | 'basic' | 'pro' {
   if (!storeOrTenantId) return 'basic';
@@ -4318,7 +4331,8 @@ export function getStoreCategories(tenantId: string, storeType?: StoreType): Cat
  * 4. Si la conexión falla: recurre a la caché local existente como fallback de resiliencia.
  * 5. NO escribe datos demo en Supabase.
  */
-export async function fetchStoreCategories(tenantId: string): Promise<Category[]> {
+export function fetchStoreCategories(tenantId: string): Promise<Category[]> {
+  return dedupeCatalogRead(`categories:${tenantId}`, async () => {
   if (!tenantId || typeof tenantId !== 'string' || !isValidTenantId(tenantId)) {
     return [];
   }
@@ -4351,6 +4365,7 @@ export async function fetchStoreCategories(tenantId: string): Promise<Category[]
 
   // Fallback seguro ante fallo de red: caché local existente
   return cached;
+  });
 }
 
 /**
@@ -4617,7 +4632,8 @@ export function getStoreProducts(tenantId: string, _storeType?: StoreType): Prod
  * 4. Si la conexión falla: recurre a la caché local existente como fallback de resiliencia.
  * 5. NO escribe datos demo en Supabase.
  */
-export async function fetchStoreProducts(tenantId: string): Promise<Product[]> {
+export function fetchStoreProducts(tenantId: string): Promise<Product[]> {
+  return dedupeCatalogRead(`products:${tenantId}`, async () => {
   if (!tenantId || typeof tenantId !== 'string' || !isValidTenantId(tenantId)) {
     return [];
   }
@@ -4650,6 +4666,7 @@ export async function fetchStoreProducts(tenantId: string): Promise<Product[]> {
 
   // Fallback seguro ante fallo de red: caché local existente
   return cached;
+  });
 }
 
 /**
