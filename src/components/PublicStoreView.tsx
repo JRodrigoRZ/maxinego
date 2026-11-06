@@ -86,6 +86,7 @@ import {
 } from './publicStore/cartStorage';
 import { CartItem } from './publicStore/types';
 import { ThemeToggle } from './ThemeToggle';
+import { RouteSkeleton } from './RouteSkeleton';
 import { PriceDisplay } from './common/PriceDisplay';
 import { StorePWAInstallButton } from './publicStore/StorePWAInstallButton';
 import { StoreHighlights } from './publicStore/StoreHighlights';
@@ -492,14 +493,7 @@ export const PublicStoreView: React.FC<PublicStoreViewProps> = ({ slug }) => {
   };
 
   if (isLoading) {
-    return (
-      <div className="w-full py-24 flex flex-col items-center justify-center text-slate-400 space-y-3">
-        <div className="w-9 h-9 border-3 border-blue-600 border-t-transparent rounded-full animate-spin" />
-        <p className="text-xs text-slate-600 dark:text-slate-300 font-medium">
-          Cargando tienda "{slug}"...
-        </p>
-      </div>
-    );
+    return <RouteSkeleton kind="store" />;
   }
 
   if (notFound || !store || !profile || !appearance || !shipping || !scheduledOrders) {
